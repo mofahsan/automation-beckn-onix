@@ -1,0 +1,216 @@
+appName: "workbench-onix"
+log:
+  level: debug
+  destinations:
+    - type: stdout
+  contextKeys:
+    - transaction_id
+    - message_id
+    - subscriber_id
+    - module_id
+http:
+  port: 3000
+  timeout:
+    read: 30
+    write: 30
+    idle: 30
+pluginManager:
+  # root: /app/plugins
+  # remoteRoot: /mnt/gcs/plugins/plugins_bundle.zip
+  # root: ./plugins
+  root: /Users/rudranshsinghal/ondc/dump/plugins
+modules:
+  - name: BapTxnReceiver
+    path: /api-service/ONDC:RET10/1.2.5/seller/
+    handler:
+      type: std
+      role: bap
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 5s
+      plugins:
+        cache:
+          id: cache
+          config: &cache_config
+            addr: 13.233.69.163:6380
+        keyManager:
+          id: keymanager
+        middleware:
+          - id: networkobservability
+            config:
+              configPath: ./config/ondc-workbench-onix/np_no_config.yaml
+        router:
+          id: router
+          config:
+            routingConfig: ./config/ondc-workbench-onix/np_router.yaml
+        schemaValidator:
+          id: schemavalidator
+          config:
+            schemaDir: /Users/rudranshsinghal/ondc/automation-utility/official-code/bekn-onix/beckn-onix/schemas
+        ondcValidator:
+          id: ondcvalidator
+          config:
+            stateFullValidations: true
+            debugMode: false
+        ondcWorkbench:
+          id: workbench
+          config:
+            protocolVersion: "1.2.5"
+            protocolDomain: "ONDC:RET10"
+            moduleRole: "BAP"
+            moduleType: "receiver"
+            configServiceURL: https://dev-automation.ondc.org/config-service
+            registryURL: https://dev-automation.ondc.org/registry-service
+            mockServiceURL: http://localhost:5002/mock
+        signValidator:
+          id: signvalidator
+      steps:
+        - ondcWorkbenchReceiver
+        - addRoute
+        - validateSchema
+        - validateOndcPayload
+        - ondcWorkbenchValidateContext
+        - validateSign
+        - validateOndcCallSave
+  - name: BppTxnReceiver
+    path: /api-service/ONDC:RET10/1.2.5/buyer/
+    handler:
+      type: std
+      role: bpp
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 5s
+      plugins:
+        cache:
+          id: cache
+          config: *cache_config
+        keyManager:
+          id: keymanager
+        middleware:
+          - id: networkobservability
+            config:
+              configPath: ./config/ondc-workbench-onix/np_no_config.yaml
+        router:
+          id: router
+          config:
+            routingConfig: ./config/ondc-workbench-onix/np_router.yaml
+        schemaValidator:
+          id: schemavalidator
+          config:
+            schemaDir: /Users/rudranshsinghal/ondc/automation-utility/official-code/bekn-onix/beckn-onix/schemas
+        ondcValidator:
+          id: ondcvalidator
+          config:
+            stateFullValidations: true
+            debugMode: false
+        ondcWorkbench:
+          id: workbench
+          config:
+            protocolVersion: "1.2.5"
+            protocolDomain: "ONDC:RET10"
+            moduleRole: "BPP"
+            moduleType: "receiver"
+            configServiceURL: https://dev-automation.ondc.org/config-service
+            mockServiceURL: http://localhost:5002/mock
+      steps:
+        - ondcWorkbenchReceiver
+        - addRoute
+        - validateSchema
+        - validateOndcPayload
+        - ondcWorkbenchValidateContext
+        - validateOndcCallSave
+  - name: mockTxnCaller
+    path: /api-service/ONDC:RET10/1.2.5/mock/
+    handler:
+      type: std
+      role: bpp
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 5s
+      plugins:
+        cache:
+          id: cache
+          config: *cache_config
+        keyManager:
+          id: keymanager
+        middleware:
+          - id: networkobservability
+            config:
+              configPath: ./config/ondc-workbench-onix/mock_no_config.yaml
+        router:
+          id: router
+          config:
+            routingConfig: ./config/ondc-workbench-onix/mock_router.yaml
+        schemaValidator:
+          id: schemavalidator
+          config:
+            schemaDir: /Users/rudranshsinghal/ondc/automation-utility/official-code/bekn-onix/beckn-onix/schemas
+        ondcValidator:
+          id: ondcvalidator
+          config:
+            stateFullValidations: true
+            debugMode: false
+        ondcWorkbench:
+          id: workbench
+          config:
+            protocolVersion: "1.2.5"
+            protocolDomain: "ONDC:RET10"
+            moduleRole: "BAP" # doesnt matter for caller with ondc workbench
+            moduleType: "caller"
+            configServiceURL: https://dev-automation.ondc.org/config-service
+            mockServiceURL: http://localhost:5002/mock
+        signer:
+          id: signer
+      steps:
+        - ondcWorkbenchReceiver
+        - addRoute
+        - validateSchema
+        - ondcWorkbenchValidateContext
+        - sign
+        - validateOndcCallSave
+  - name: standaloneValidator
+    path: /api-service/ONDC:RET10/1.2.5/test/
+    handler:
+      type: std
+      role: bap
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 5s
+      plugins:
+        schemaValidator:
+          id: schemavalidator
+          config:
+            schemaDir: /Users/rudranshsinghal/ondc/automation-utility/official-code/bekn-onix/beckn-onix/schemas
+        ondcValidator:
+          id: ondcvalidator
+          config:
+            stateFullValidations: false
+            debugMode: false
+      steps:
+        - validateSchema
+        - validateOndcPayload
+  - name: formReceiver
+    path: /api-service/ONDC:RET10/1.2.5/html-form
+    handler:
+      type: std
+      role: bap
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 5s
+      plugins:
+        router:
+          id: router
+          config:
+            routingConfig: ./config/ondc-workbench-onix/form_router.yaml
+      steps:
+        - addRoute

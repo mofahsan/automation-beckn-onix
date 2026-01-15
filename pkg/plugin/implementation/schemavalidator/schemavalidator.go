@@ -20,7 +20,8 @@ import (
 type payload struct {
 	Context struct {
 		Domain  string `json:"domain"`
-		Version string `json:"version"`
+		Version string `json:"version,omitempty"`
+		CoreVersion string `json:"core_version,omitempty"`
 	} `json:"context"`
 }
 
@@ -55,6 +56,7 @@ func New(ctx context.Context, config *Config) (*schemaValidator, func() error, e
 
 // Validate validates the given data against the schema.
 func (v *schemaValidator) Validate(ctx context.Context, url *url.URL, data []byte) error {
+	fmt.Println("Validating schema...")
 	var payloadData payload
 	err := json.Unmarshal(data, &payloadData)
 	if err != nil {
@@ -64,8 +66,13 @@ func (v *schemaValidator) Validate(ctx context.Context, url *url.URL, data []byt
 	if payloadData.Context.Domain == "" {
 		return model.NewBadReqErr(fmt.Errorf("missing field Domain in context"))
 	}
+	if payloadData.Context.Version == "" && payloadData.Context.CoreVersion == "" {
+		return model.NewBadReqErr(fmt.Errorf("missing field Version or CoreVersion in context"))
+	}
 	if payloadData.Context.Version == "" {
-		return model.NewBadReqErr(fmt.Errorf("missing field Version in context"))
+		payloadData.Context.Version = payloadData.Context.CoreVersion
+	}else if payloadData.Context.CoreVersion == "" {
+		payloadData.Context.CoreVersion = payloadData.Context.Version
 	}
 
 	// Extract domain, version, and endpoint from the payload and uri.
@@ -74,13 +81,12 @@ func (v *schemaValidator) Validate(ctx context.Context, url *url.URL, data []byt
 	version = fmt.Sprintf("v%s", version)
 
 	endpoint := path.Base(url.String())
-	log.Debugf(ctx, "Handling request for endpoint: %s", endpoint)
+	log.Debugf(ctx, "Handling request for endpoint for schema: %s", endpoint)
 	domain := strings.ToLower(cxtDomain)
 	domain = strings.ReplaceAll(domain, ":", "_")
 
 	// Construct the schema file name.
 	schemaFileName := fmt.Sprintf("%s_%s_%s", domain, version, endpoint)
-
 	// Retrieve the schema from the cache.
 	schema, exists := v.schemaCache[schemaFileName]
 	if !exists {

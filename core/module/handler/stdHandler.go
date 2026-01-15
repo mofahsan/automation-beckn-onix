@@ -27,6 +27,8 @@ type stdHandler struct {
 	router           definition.Router
 	publisher        definition.Publisher
 	transportWrapper definition.TransportWrapper
+	ondcValidator    definition.OndcValidator
+	ondcWorkbench    definition.OndcWorkbench
 	SubscriberID     string
 	role             model.Role
 	httpClient       *http.Client
@@ -84,6 +86,7 @@ func NewStdHandler(ctx context.Context, mgr PluginManager, cfg *Config, moduleNa
 
 // ServeHTTP processes an incoming HTTP request and executes defined processing steps.
 func (h *stdHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+
 	r.Header.Set("X-Module-Name", h.moduleName)
 	r.Header.Set("X-Role", string(h.role))
 
@@ -117,6 +120,9 @@ func (h *stdHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// These headers are only needed for internal instrumentation; avoid leaking them downstream.
+	r.Header.Del("X-Module-Name")
+	r.Header.Del("X-Role")
 	// Handle routing based on the defined route type.
 	route(ctx, r, w, h.publisher, h.httpClient)
 }
@@ -153,37 +159,96 @@ var proxyFunc = proxy
 // route handles request forwarding or message publishing based on the routing type.
 func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb definition.Publisher, httpClient *http.Client) {
 	log.Debugf(ctx, "Routing to ctx.Route to %#v", ctx.Route)
-	switch ctx.Route.TargetType {
-	case "url":
-		log.Infof(ctx.Context, "Forwarding request to URL: %s", ctx.Route.URL)
-		proxyFunc(ctx, r, w, httpClient)
-		return
-	case "publisher":
-		if pb == nil {
-			err := fmt.Errorf("publisher plugin not configured")
-			log.Errorf(ctx.Context, err, "Invalid configuration:%v", err)
+
+	if ctx.Route.ActAsProxy {
+		// Act as a proxy and forward the request to the target url
+		switch ctx.Route.TargetType {
+		case "url":
+			log.Infof(ctx.Context, "Forwarding request to URL: %s", ctx.Route.URL)
+			proxyFunc(ctx, r, w, httpClient) // Fixed: was proxyFunc
+			return
+		case "publisher":
+			if pb == nil {
+				err := fmt.Errorf("publisher plugin not configured")
+				log.Errorf(ctx.Context, err, "Invalid configuration: %v", err)
+				response.SendNack(ctx, w, err)
+				return
+			}
+			log.Infof(ctx.Context, "Publishing message to: %s", ctx.Route.PublisherID)
+			if err := pb.Publish(ctx, ctx.Route.PublisherID, ctx.Body); err != nil {
+				log.Errorf(ctx.Context, err, "Failed to publish message")
+				response.SendNack(ctx, w, err)
+				return
+			}
+			response.SendAck(w)
+		default:
+			err := fmt.Errorf("unknown route type: %s", ctx.Route.TargetType)
+			log.Errorf(ctx.Context, err, "Invalid configuration: %v", err)
 			response.SendNack(ctx, w, err)
 			return
 		}
-		log.Infof(ctx.Context, "Publishing message to: %s", ctx.Route.PublisherID)
-		if err := pb.Publish(ctx, ctx.Route.PublisherID, ctx.Body); err != nil {
-			log.Errorf(ctx.Context, err, "Failed to publish message")
-			http.Error(w, "Error publishing message", http.StatusInternalServerError)
-			response.SendNack(ctx, w, err)
-			return
+	} else {
+
+		val, err := ctx.Request.Cookie("custom-response-body")
+
+		if err == nil {
+			response.SendBody(ctx, w, val.Value)
+		} else {
+			// Ack the request immediately and then make an async HTTP request to the target url
+			response.SendAck(w)
 		}
-	default:
-		err := fmt.Errorf("unknown route type: %s", ctx.Route.TargetType)
-		log.Errorf(ctx.Context, err, "Invalid configuration:%v", err)
-		response.SendNack(ctx, w, err)
-		return
+		RegisterPostResponseHook(r, func() {
+			switch ctx.Route.TargetType {
+
+			case "url":
+				log.Infof(ctx, "Making async request to URL: %s", ctx.Route.URL)
+				if err := makeAsyncRequest(ctx, ctx, httpClient); err != nil {
+					log.Errorf(ctx, err, "Async request failed")
+				}
+
+			case "publisher":
+				if pb == nil {
+					log.Errorf(ctx, nil, "Publisher plugin not configured")
+					return
+				}
+				log.Infof(ctx, "Publishing message asynchronously to: %s", ctx.Route.PublisherID)
+				if err := pb.Publish(ctx, ctx.Route.PublisherID, ctx.Body); err != nil {
+					log.Errorf(ctx, err, "Failed to publish message asynchronously")
+				}
+			}
+		})
 	}
-	response.SendAck(w)
+}
+
+// makeAsyncRequest makes an HTTP request without blocking the original request
+func makeAsyncRequest(ctx context.Context, stepCtx *model.StepContext, httpClient *http.Client) error {
+	target := stepCtx.Route.URL
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(stepCtx.Body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Copy relevant headers from original request
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-Host", stepCtx.Route.URL.Host)
+
+	log.Request(ctx, req, stepCtx.Body)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	log.Infof(ctx, "Async request completed with status %d: %s", resp.StatusCode, string(body))
+
+	return nil
 }
 func proxy(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpClient *http.Client) {
 	target := ctx.Route.URL
 	r.Header.Set("X-Forwarded-Host", r.Host)
-
 	director := func(req *http.Request) {
 		req.URL = target
 		req.Host = target.Host
@@ -200,6 +265,7 @@ func proxy(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpC
 }
 
 // loadPlugin is a generic function to load and validate plugins.
+
 func loadPlugin[T any](ctx context.Context, name string, cfg *plugin.Config, mgrFunc func(context.Context, *plugin.Config) (T, error)) (T, error) {
 	var zero T
 	if cfg == nil {
@@ -225,9 +291,7 @@ func loadKeyManager(ctx context.Context, mgr PluginManager, cache definition.Cac
 	if cache == nil {
 		return nil, fmt.Errorf("failed to load KeyManager plugin (%s): Cache plugin not configured", cfg.ID)
 	}
-	if registry == nil {
-		return nil, fmt.Errorf("failed to load KeyManager plugin (%s): Registry plugin not configured", cfg.ID)
-	}
+
 	km, err := mgr.KeyManager(ctx, cache, registry, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load KeyManager plugin (%s): %w", cfg.ID, err)
@@ -235,6 +299,36 @@ func loadKeyManager(ctx context.Context, mgr PluginManager, cache definition.Cac
 
 	log.Debugf(ctx, "Loaded Keymanager plugin: %s", cfg.ID)
 	return km, nil
+}
+
+// loadOndcValidator loads the OndcValidator plugin using the provided PluginManager and cache.
+func loadOndcValidator(ctx context.Context, mgr PluginManager, cache definition.Cache, cfg *plugin.Config) (definition.OndcValidator, error) {
+	if cfg == nil {
+		log.Debug(ctx, "Skipping OndcValidator plugin: not configured")
+		return nil, nil
+	}
+	ov, err := mgr.OndcValidator(ctx, cache, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load OndcValidator plugin (%s): %w", cfg.ID, err)
+	}
+
+	log.Debugf(ctx, "Loaded OndcValidator plugin: %s", cfg.ID)
+	return ov, nil
+}
+
+// loadOndcWorkbench loads the OndcWorkbench plugin using the provided PluginManager and cache.
+func loadOndcWorkbench(ctx context.Context, mgr PluginManager, cache definition.Cache, cfg *plugin.Config) (definition.OndcWorkbench, error) {
+	if cfg == nil {
+		log.Debug(ctx, "Skipping OndcWorkbench plugin: not configured")
+		return nil, nil
+	}
+	ow, err := mgr.OndcWorkbench(ctx, cache, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load OndcWorkbench plugin (%s): %w", cfg.ID, err)
+	}
+
+	log.Debugf(ctx, "Loaded OndcWorkbench plugin: %s", cfg.ID)
+	return ow, nil
 }
 
 // initPlugins initializes required plugins for the processor.
@@ -265,6 +359,12 @@ func (h *stdHandler) initPlugins(ctx context.Context, mgr PluginManager, cfg *Pl
 		return err
 	}
 	if h.transportWrapper, err = loadPlugin(ctx, "TransportWrapper", cfg.TransportWrapper, mgr.TransportWrapper); err != nil {
+		return err
+	}
+	if h.ondcValidator, err = loadOndcValidator(ctx, mgr, h.cache, cfg.OndcValidator); err != nil {
+		return err
+	}
+	if h.ondcWorkbench, err = loadOndcWorkbench(ctx, mgr, h.cache, cfg.OndcWorkbench); err != nil {
 		return err
 	}
 
@@ -299,6 +399,14 @@ func (h *stdHandler) initSteps(ctx context.Context, mgr PluginManager, cfg *Conf
 			s, err = newValidateSchemaStep(h.schemaValidator)
 		case "addRoute":
 			s, err = newAddRouteStep(h.router)
+		case "validateOndcPayload":
+			s, err = newValidateOndcStep(h.ondcValidator)
+		case "validateOndcCallSave":
+			s, err = newValidateOndcCallSaveStep(h.ondcValidator)
+		case "ondcWorkbenchReceiver":
+			s, err = newWorkbenchReceiveStep(h.ondcWorkbench)
+		case "ondcWorkbenchValidateContext":
+			s, err = newWorkbenchValidateContextStep(h.ondcWorkbench)
 		default:
 			if customStep, exists := steps[step]; exists {
 				s = customStep

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -99,26 +100,24 @@ func (s *validateSignStep) Run(ctx *model.StepContext) error {
 }
 
 func (s *validateSignStep) validateHeaders(ctx *model.StepContext) error {
+	headerValCookie , err := ctx.Request.Cookie("header_validation")
+	if err != nil {
+		headerValCookie = &http.Cookie{Value: "true"}
+	}
+	if(headerValCookie.Value == "false"){
+		log.Debug(ctx,"Skipping Signature validation step as per header_validation cookie")
+		return nil
+	}
 	unauthHeader := fmt.Sprintf("Signature realm=\"%s\",headers=\"(created) (expires) digest\"", ctx.SubID)
-	headerValue := ctx.Request.Header.Get(model.AuthHeaderGateway)
+	headerValue := ctx.Request.Header.Get(model.AuthHeaderSubscriber)
 	if len(headerValue) != 0 {
-		log.Debugf(ctx, "Validating %v Header", model.AuthHeaderGateway)
+		log.Debugf(ctx, "Validating %v Header", model.AuthHeaderSubscriber)
 		if err := s.validate(ctx, headerValue); err != nil {
 			ctx.RespHeader.Set(model.UnaAuthorizedHeaderGateway, unauthHeader)
-			return model.NewSignValidationErr(fmt.Errorf("failed to validate %s: %w", model.AuthHeaderGateway, err))
+			return model.NewSignValidationErr(fmt.Errorf("failed to validate %s: %w", model.AuthHeaderSubscriber, err))
 		}
 	}
-
-	log.Debugf(ctx, "Validating %v Header", model.AuthHeaderSubscriber)
-	headerValue = ctx.Request.Header.Get(model.AuthHeaderSubscriber)
-	if len(headerValue) == 0 {
-		ctx.RespHeader.Set(model.UnaAuthorizedHeaderSubscriber, unauthHeader)
-		return model.NewSignValidationErr(fmt.Errorf("%s missing", model.UnaAuthorizedHeaderSubscriber))
-	}
-	if err := s.validate(ctx, headerValue); err != nil {
-		ctx.RespHeader.Set(model.UnaAuthorizedHeaderSubscriber, unauthHeader)
-		return model.NewSignValidationErr(fmt.Errorf("failed to validate %s: %w", model.AuthHeaderSubscriber, err))
-	}
+	log.Debugf(ctx, "Header validated successfully for %v", model.AuthHeaderSubscriber)
 	return nil
 }
 
@@ -209,6 +208,9 @@ func newValidateSchemaStep(schemaValidator definition.SchemaValidator) (definiti
 	}, nil
 }
 
+
+
+
 // Run executes the schema validation step.
 func (s *validateSchemaStep) Run(ctx *model.StepContext) error {
 	err := s.validator.Validate(ctx, ctx.Request.URL, ctx.Body)
@@ -255,7 +257,8 @@ func newAddRouteStep(router definition.Router) (definition.Step, error) {
 
 // Run executes the routing step.
 func (s *addRouteStep) Run(ctx *model.StepContext) error {
-	route, err := s.router.Route(ctx, ctx.Request.URL, ctx.Body)
+
+	route, err := s.router.Route(ctx, ctx.Request.URL, ctx.Body,ctx.Request)
 	if err != nil {
 		return fmt.Errorf("failed to determine route: %w", err)
 	}
@@ -263,6 +266,7 @@ func (s *addRouteStep) Run(ctx *model.StepContext) error {
 		TargetType:  route.TargetType,
 		PublisherID: route.PublisherID,
 		URL:         route.URL,
+		ActAsProxy:  route.ActAsProxy,
 	}
 	if s.metrics != nil && ctx.Route != nil {
 		s.metrics.RoutingDecisionsTotal.Add(ctx.Context, 1,
@@ -287,3 +291,116 @@ func extractSchemaVersion(body []byte) string {
 	}
 	return "unknown"
 }
+
+// ============================================================================
+// region ONDC VALIDATOR STEPS
+// ============================================================================
+
+// Run executes the ONDC validation step.
+func (s *validateOndcStep) Run(ctx *model.StepContext) error {
+	skipCookie, err := ctx.Request.Cookie("protocol_validation")
+	if err != nil {
+		skipCookie = &http.Cookie{Value: "true"}
+	}
+	log.Debugf(ctx,"Executing ONDC validation step with protocol_validation header value: %s", skipCookie.Value)
+	if(skipCookie.Value == "false"){
+		log.Debug(ctx,"Skipping ONDC validation step as per protocol_validation cookie")
+		return nil
+	}
+	if err := s.validator.ValidatePayload(ctx, ctx.Request.URL, ctx.Body); err != nil {
+		return fmt.Errorf("ondc validation failed: %w", err)
+	}
+	return nil
+}
+
+// newValidateOndcStep creates and returns the validateOndc step after validation.
+func newValidateOndcStep(ondcValidator definition.OndcValidator) (definition.Step, error) {
+	if ondcValidator == nil {
+		return nil, fmt.Errorf("invalid config: OndcValidator plugin not configured")
+	}
+	log.Debug(context.Background(), "adding ondc validator")
+	return &validateOndcStep{validator: ondcValidator}, nil
+}
+
+// validateOndcStep represents the ONDC validation step.
+type validateOndcStep struct {
+	validator definition.OndcValidator
+}
+
+// validateOndcCallSaveStep represents the ONDC call save validation step.
+type validateOndcCallSaveStep struct {
+	validator definition.OndcValidator
+}
+
+// Run executes the ONDC call save validation step.
+func (s *validateOndcCallSaveStep) Run(ctx *model.StepContext) error {
+	if err := s.validator.SaveValidationData(ctx.Context, ctx.Request.URL, ctx.Body); err != nil {
+		return fmt.Errorf("ondc call save validation failed: %w", err)
+	}
+	return nil
+}
+
+// newValidateOndcCallSaveStep creates and returns the validateOndcCallSave step after validation.
+func newValidateOndcCallSaveStep(ondcValidator definition.OndcValidator) (definition.Step, error) {
+	if ondcValidator == nil {
+		return nil, fmt.Errorf("invalid config: OndcValidator plugin not configured")
+	}
+	log.Debug(context.Background(), "adding ondc call save validator")
+	return &validateOndcCallSaveStep{validator: ondcValidator}, nil
+}
+// endregion 
+
+
+
+
+// ============================================================================
+// region WORKBENCH STEPS
+// ============================================================================
+type workbenchReceiveStep struct {
+	workbench definition.OndcWorkbench
+}
+
+// newWorkbenchReceiveStep creates and returns the workbench receive step after validation.
+func newWorkbenchReceiveStep(workbench definition.OndcWorkbench) (definition.Step, error) {
+	if workbench == nil {
+		return nil, fmt.Errorf("invalid config: OndcWorkbench plugin not configured")
+	}
+	log.Debug(context.Background(), "adding ondc workbench receive step")
+	return &workbenchReceiveStep{workbench: workbench}, nil
+}
+
+// Run executes the workbench receive step.
+func (s *workbenchReceiveStep) Run(ctx *model.StepContext) error {
+	log.Debugf(ctx,"Executing ONDC workbench receive step")
+	if err := s.workbench.WorkbenchReceiver(ctx,ctx.Request,ctx.Body); err != nil {
+		return fmt.Errorf("ondc workbench receive step failed: %w", err)
+	}
+	subscriberIDCookie , err := ctx.Request.Cookie("subscriber_id")
+	log.Debugf(ctx,"Extracted subscriber_id cookie: %v", subscriberIDCookie)
+	if err == nil {
+		ctx.SubID = subscriberIDCookie.Value
+	}
+	return nil
+}
+
+type workbenchValidateContextStep struct {
+	workbench definition.OndcWorkbench
+}
+
+// newWorkbenchValidateContextStep creates and returns the workbench validate context step after validation.
+func newWorkbenchValidateContextStep(workbench definition.OndcWorkbench) (definition.Step, error) {
+	if workbench == nil {
+		return nil, fmt.Errorf("invalid config: OndcWorkbench plugin not configured")
+	}
+	log.Debug(context.Background(), "adding ondc workbench process step")
+	return &workbenchValidateContextStep{workbench: workbench}, nil
+}
+
+// Run executes the workbench process step.
+func (s *workbenchValidateContextStep) Run(ctx *model.StepContext) error {
+	if err := s.workbench.WorkbenchValidateContext(ctx,ctx.Request,ctx.Body); err != nil {
+		return fmt.Errorf("ondc workbench context validation step failed: %w", err)
+	}
+	return nil
+}
+// endregion

@@ -129,6 +129,8 @@ type Route struct {
 	TargetType  string   // "url" or "publisher"
 	PublisherID string   // For message queues
 	URL         *url.URL // For API calls
+	ActAsProxy  bool     // Whether to act as a proxy for this route
+	JsonPath	string   // JSONPath to extract URL from http request -> internal use only
 }
 
 // Keyset represents a collection of cryptographic keys used for signing and encryption.
@@ -183,5 +185,7 @@ type Message struct {
 
 // Response represents the main response structure.
 type Response struct {
+	Context  any `json:"context,omitempty"`
 	Message Message `json:"message"`
+	Error	*Error  `json:"error,omitempty"`
 }

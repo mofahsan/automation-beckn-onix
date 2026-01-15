@@ -1,4 +1,4 @@
-module github.com/beckn-one/beckn-onix
+module github.com/ONDC-Official/automation-beckn-onix
 
 go 1.24.0
 
@@ -19,7 +19,7 @@ require (
 
 require github.com/zenazn/pkcs7pad v0.0.0-20170308005700-253a5b1f0e03
 
-require golang.org/x/text v0.26.0 // indirect
+require golang.org/x/text v0.32.0 // indirect
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -64,6 +64,7 @@ require (
 )
 
 require (
+	github.com/beckn-one/beckn-onix v0.0.0-00010101000000-000000000000
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-retryablehttp v0.7.7
@@ -83,3 +84,7 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v2 v2.4.0
 )
+
+// replace github.com/beckn-one/beckn-onix => github.com/ONDC-Official/automation-beckn-onix v1.4.1
+
+replace github.com/beckn-one/beckn-onix => ./
