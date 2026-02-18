@@ -189,14 +189,6 @@ func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb de
 		}
 	} else {
 
-		val, err := ctx.Request.Cookie("custom-response-body")
-
-		if err == nil {
-			response.SendBody(ctx, w, val.Value)
-		} else {
-			// Ack the request immediately and then make an async HTTP request to the target url
-			response.SendAck(w)
-		}
 		RegisterPostResponseHook(r, func() {
 			switch ctx.Route.TargetType {
 
@@ -217,6 +209,16 @@ func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb de
 				}
 			}
 		})
+
+		val, err := ctx.Request.Cookie("custom-response-body")
+
+		if err == nil {
+			response.SendBody(ctx, w, val.Value)
+		} else {
+			// Ack the request immediately and then make an async HTTP request to the target url
+			response.SendAck(w)
+		}
+
 	}
 }
 
