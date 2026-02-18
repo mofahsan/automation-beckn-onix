@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -211,14 +213,18 @@ func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb de
 		})
 
 		val, err := ctx.Request.Cookie("custom-response-body")
-
 		if err == nil {
-			response.SendBody(ctx, w, val.Value)
-		} else {
-			// Ack the request immediately and then make an async HTTP request to the target url
-			response.SendAck(w)
+			decodedValue, err := base64.StdEncoding.DecodeString(val.Value)
+			if err != nil {
+				log.Errorf(ctx, err, "Failed to decode custom response body from cookie")
+				response.SendNack(ctx, w, fmt.Errorf("invalid custom response body"))
+				return
+			}
+			log.Infof(ctx, "Using custom response body from cookie")
+			response.SendBody(ctx, w, json.RawMessage(decodedValue))
+			return
 		}
-
+		response.SendAck(w)
 	}
 }
 
