@@ -1,5 +1,5 @@
-github.com/ONDC-Official/automation-beckn-onix v1.4.0 h1:JpRvy+xv6BmANWgjTbb7Y1cs1yU+YPAObdxiF8kT7qM=
-github.com/ONDC-Official/automation-beckn-onix v1.4.0/go.mod h1:lBRFNN3iwo+UQCq2+r3ZWuBDfNk/gbfXXjalnTUPG5I=
+github.com/ONDC-Official/automation-beckn-onix v1.5.0 h1:wpZzRwFzOxfEAmqh/UiBkwzaTz4XH/IQ6ueBdZrcl+Y=
+github.com/ONDC-Official/automation-beckn-onix v1.5.0/go.mod h1:g/FMlWEfVVx26SZVGiRNBGSVVx6d6GvWRiqB63SK1hQ=
 github.com/armon/go-radix v0.0.0-20180808171621-7fddfc383310/go.mod h1:ufUuZ+zHj4x4TnLV4JWEpy2hxWSpsRywHrMgIH9cCH8=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=

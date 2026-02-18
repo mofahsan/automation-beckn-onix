@@ -85,6 +85,6 @@ require (
 	gopkg.in/yaml.v2 v2.4.0
 )
 
-replace github.com/beckn-one/beckn-onix => github.com/ONDC-Official/automation-beckn-onix v1.4.0
+replace github.com/beckn-one/beckn-onix => github.com/ONDC-Official/automation-beckn-onix v1.5.0
 
 // replace github.com/beckn-one/beckn-onix => ./
