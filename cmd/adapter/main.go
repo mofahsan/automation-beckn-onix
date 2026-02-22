@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"strings"
 	"sync"
@@ -36,14 +37,20 @@ type Config struct {
 }
 
 type httpConfig struct {
-	Port     string        `yaml:"port"`
-	Timeouts timeoutConfig `yaml:"timeout"`
+	Port      string          `yaml:"port"`
+	Timeouts  timeoutConfig   `yaml:"timeout"`
+	Profiling profilingConfig `yaml:"profiling,omitempty"`
 }
 
 type timeoutConfig struct {
 	Read  time.Duration `yaml:"read"`
 	Write time.Duration `yaml:"write"`
 	Idle  time.Duration `yaml:"idle"`
+}
+
+type profilingConfig struct {
+	Enable     bool   `yaml:"enable"`
+	PathPrefix string `yaml:"pathPrefix,omitempty"`
 }
 
 var configPath string
@@ -133,7 +140,40 @@ func newServer(ctx context.Context, mgr handler.PluginManager, cfg *Config) (htt
 	if err := module.Register(ctx, cfg.Modules, mux, mgr); err != nil {
 		return nil, fmt.Errorf("failed to register modules: %w", err)
 	}
+	registerProfilingEndpoints(ctx, mux, cfg.HTTP.Profiling)
 	return mux, nil
+}
+
+func registerProfilingEndpoints(ctx context.Context, mux *http.ServeMux, cfg profilingConfig) {
+	if !cfg.Enable {
+		return
+	}
+
+	prefix := normalizeProfilingPrefix(cfg.PathPrefix)
+	mux.HandleFunc(prefix+"/", pprof.Index)
+	mux.HandleFunc(prefix+"/cmdline", pprof.Cmdline)
+	mux.HandleFunc(prefix+"/profile", pprof.Profile)
+	mux.HandleFunc(prefix+"/symbol", pprof.Symbol)
+	mux.HandleFunc(prefix+"/trace", pprof.Trace)
+	mux.Handle(prefix+"/heap", pprof.Handler("heap"))
+	mux.Handle(prefix+"/allocs", pprof.Handler("allocs"))
+	mux.Handle(prefix+"/goroutine", pprof.Handler("goroutine"))
+	mux.Handle(prefix+"/threadcreate", pprof.Handler("threadcreate"))
+	mux.Handle(prefix+"/block", pprof.Handler("block"))
+	mux.Handle(prefix+"/mutex", pprof.Handler("mutex"))
+	log.Infof(ctx, "Memory profiling endpoints enabled at %s", prefix)
+}
+
+func normalizeProfilingPrefix(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return "/debug/pprof"
+	}
+	trimmed := strings.Trim(prefix, "/")
+	if trimmed == "" {
+		return "/debug/pprof"
+	}
+	return "/" + trimmed
 }
 
 var newManagerFunc = plugin.NewManager

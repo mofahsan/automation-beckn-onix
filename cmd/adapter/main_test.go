@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,8 +197,8 @@ func TestRunFailure(t *testing.T) {
 			}
 			defer func() { newManagerFunc = originalNewManager }()
 
-		originalNewServer := newServerFunc
-		newServerFunc = func(ctx context.Context, mgr handler.PluginManager, cfg *Config) (http.Handler, error) {
+			originalNewServer := newServerFunc
+			newServerFunc = func(ctx context.Context, mgr handler.PluginManager, cfg *Config) (http.Handler, error) {
 				return tt.mockServer(ctx, mgr, cfg)
 			}
 			defer func() { newServerFunc = originalNewServer }()
@@ -335,6 +336,68 @@ func TestNewServerSuccess(t *testing.T) {
 			}
 			if handler == nil {
 				t.Errorf("Expected handler to be non-nil, but got nil")
+			}
+		})
+	}
+}
+
+func TestNewServerProfilingEndpoints(t *testing.T) {
+	tests := []struct {
+		name           string
+		profiling      profilingConfig
+		requestPath    string
+		expectedCode   int
+		expectedInBody string
+	}{
+		{
+			name:           "Profiling enabled with default prefix",
+			profiling:      profilingConfig{Enable: true},
+			requestPath:    "/debug/pprof/heap?debug=1",
+			expectedCode:   http.StatusOK,
+			expectedInBody: "heap profile",
+		},
+		{
+			name:           "Profiling enabled with custom prefix",
+			profiling:      profilingConfig{Enable: true, PathPrefix: "internal/pprof"},
+			requestPath:    "/internal/pprof/heap?debug=1",
+			expectedCode:   http.StatusOK,
+			expectedInBody: "heap profile",
+		},
+		{
+			name:         "Profiling disabled",
+			profiling:    profilingConfig{Enable: false},
+			requestPath:  "/debug/pprof/heap?debug=1",
+			expectedCode: http.StatusNotFound,
+		},
+	}
+
+	mockMgr := new(MockPluginManager)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Modules: []module.Config{},
+				HTTP: httpConfig{
+					Port:      "8080",
+					Profiling: tt.profiling,
+				},
+			}
+
+			handler, err := newServer(context.Background(), mockMgr, cfg)
+			if err != nil {
+				t.Fatalf("Expected no error, but got: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, tt.requestPath, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.expectedCode {
+				t.Fatalf("Expected status %d, got %d", tt.expectedCode, rec.Code)
+			}
+
+			if tt.expectedInBody != "" && !strings.Contains(rec.Body.String(), tt.expectedInBody) {
+				t.Fatalf("Expected response body to contain %q, got %q", tt.expectedInBody, rec.Body.String())
 			}
 		})
 	}
