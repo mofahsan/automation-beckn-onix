@@ -344,30 +344,21 @@ func TestNewServerSuccess(t *testing.T) {
 func TestNewServerProfilingEndpoints(t *testing.T) {
 	tests := []struct {
 		name           string
-		profiling      profilingConfig
 		requestPath    string
 		expectedCode   int
 		expectedInBody string
 	}{
 		{
-			name:           "Profiling enabled with default prefix",
-			profiling:      profilingConfig{Enable: true},
+			name:           "Profiling heap endpoint available by default",
 			requestPath:    "/debug/pprof/heap?debug=1",
 			expectedCode:   http.StatusOK,
 			expectedInBody: "heap profile",
 		},
 		{
-			name:           "Profiling enabled with custom prefix",
-			profiling:      profilingConfig{Enable: true, PathPrefix: "internal/pprof"},
-			requestPath:    "/internal/pprof/heap?debug=1",
+			name:           "Profiling index endpoint available by default",
+			requestPath:    "/debug/pprof/",
 			expectedCode:   http.StatusOK,
-			expectedInBody: "heap profile",
-		},
-		{
-			name:         "Profiling disabled",
-			profiling:    profilingConfig{Enable: false},
-			requestPath:  "/debug/pprof/heap?debug=1",
-			expectedCode: http.StatusNotFound,
+			expectedInBody: "Types of profiles available",
 		},
 	}
 
@@ -378,8 +369,7 @@ func TestNewServerProfilingEndpoints(t *testing.T) {
 			cfg := &Config{
 				Modules: []module.Config{},
 				HTTP: httpConfig{
-					Port:      "8080",
-					Profiling: tt.profiling,
+					Port: "8080",
 				},
 			}
 

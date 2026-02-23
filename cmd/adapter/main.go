@@ -37,20 +37,14 @@ type Config struct {
 }
 
 type httpConfig struct {
-	Port      string          `yaml:"port"`
-	Timeouts  timeoutConfig   `yaml:"timeout"`
-	Profiling profilingConfig `yaml:"profiling,omitempty"`
+	Port     string        `yaml:"port"`
+	Timeouts timeoutConfig `yaml:"timeout"`
 }
 
 type timeoutConfig struct {
 	Read  time.Duration `yaml:"read"`
 	Write time.Duration `yaml:"write"`
 	Idle  time.Duration `yaml:"idle"`
-}
-
-type profilingConfig struct {
-	Enable     bool   `yaml:"enable"`
-	PathPrefix string `yaml:"pathPrefix,omitempty"`
 }
 
 var configPath string
@@ -140,16 +134,12 @@ func newServer(ctx context.Context, mgr handler.PluginManager, cfg *Config) (htt
 	if err := module.Register(ctx, cfg.Modules, mux, mgr); err != nil {
 		return nil, fmt.Errorf("failed to register modules: %w", err)
 	}
-	registerProfilingEndpoints(ctx, mux, cfg.HTTP.Profiling)
+	registerProfilingEndpoints(ctx, mux)
 	return mux, nil
 }
 
-func registerProfilingEndpoints(ctx context.Context, mux *http.ServeMux, cfg profilingConfig) {
-	if !cfg.Enable {
-		return
-	}
-
-	prefix := normalizeProfilingPrefix(cfg.PathPrefix)
+func registerProfilingEndpoints(ctx context.Context, mux *http.ServeMux) {
+	const prefix = "/debug/pprof"
 	mux.HandleFunc(prefix+"/", pprof.Index)
 	mux.HandleFunc(prefix+"/cmdline", pprof.Cmdline)
 	mux.HandleFunc(prefix+"/profile", pprof.Profile)
@@ -162,18 +152,6 @@ func registerProfilingEndpoints(ctx context.Context, mux *http.ServeMux, cfg pro
 	mux.Handle(prefix+"/block", pprof.Handler("block"))
 	mux.Handle(prefix+"/mutex", pprof.Handler("mutex"))
 	log.Infof(ctx, "Memory profiling endpoints enabled at %s", prefix)
-}
-
-func normalizeProfilingPrefix(prefix string) string {
-	prefix = strings.TrimSpace(prefix)
-	if prefix == "" {
-		return "/debug/pprof"
-	}
-	trimmed := strings.Trim(prefix, "/")
-	if trimmed == "" {
-		return "/debug/pprof"
-	}
-	return "/" + trimmed
 }
 
 var newManagerFunc = plugin.NewManager
