@@ -3,12 +3,14 @@ package schemavalidator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
@@ -19,16 +21,22 @@ import (
 // Payload represents the structure of the data payload with context information.
 type payload struct {
 	Context struct {
-		Domain  string `json:"domain"`
-		Version string `json:"version,omitempty"`
+		Domain      string `json:"domain"`
+		Version     string `json:"version,omitempty"`
 		CoreVersion string `json:"core_version,omitempty"`
 	} `json:"context"`
 }
+
+var errSchemaKeyNotFound = errors.New("schema key not found")
 
 // schemaValidator implements the Validator interface.
 type schemaValidator struct {
 	config      *Config
 	schemaCache map[string]*jsonschema.Schema
+	schemaFiles map[string]string
+	compiler    *jsonschema.Compiler
+	cacheMu     sync.RWMutex
+	compileMu   sync.Mutex
 }
 
 // Config struct for SchemaValidator.
@@ -45,6 +53,8 @@ func New(ctx context.Context, config *Config) (*schemaValidator, func() error, e
 	v := &schemaValidator{
 		config:      config,
 		schemaCache: make(map[string]*jsonschema.Schema),
+		schemaFiles: make(map[string]string),
+		compiler:    jsonschema.NewCompiler(),
 	}
 
 	// Call Initialise function to load schemas and get validators
@@ -56,7 +66,6 @@ func New(ctx context.Context, config *Config) (*schemaValidator, func() error, e
 
 // Validate validates the given data against the schema.
 func (v *schemaValidator) Validate(ctx context.Context, url *url.URL, data []byte) error {
-	fmt.Println("Validating schema...")
 	var payloadData payload
 	err := json.Unmarshal(data, &payloadData)
 	if err != nil {
@@ -71,7 +80,7 @@ func (v *schemaValidator) Validate(ctx context.Context, url *url.URL, data []byt
 	}
 	if payloadData.Context.Version == "" {
 		payloadData.Context.Version = payloadData.Context.CoreVersion
-	}else if payloadData.Context.CoreVersion == "" {
+	} else if payloadData.Context.CoreVersion == "" {
 		payloadData.Context.CoreVersion = payloadData.Context.Version
 	}
 
@@ -87,10 +96,12 @@ func (v *schemaValidator) Validate(ctx context.Context, url *url.URL, data []byt
 
 	// Construct the schema file name.
 	schemaFileName := fmt.Sprintf("%s_%s_%s", domain, version, endpoint)
-	// Retrieve the schema from the cache.
-	schema, exists := v.schemaCache[schemaFileName]
-	if !exists {
-		return model.NewBadReqErr(fmt.Errorf("schema not found for domain: %s", domain))
+	schema, err := v.getCompiledSchema(schemaFileName)
+	if err != nil {
+		if errors.Is(err, errSchemaKeyNotFound) {
+			return model.NewBadReqErr(fmt.Errorf("schema not found for domain: %s", domain))
+		}
+		return model.NewBadReqErr(err)
 	}
 
 	var jsonData any
@@ -124,8 +135,42 @@ func (v *schemaValidator) Validate(ctx context.Context, url *url.URL, data []byt
 	return nil
 }
 
-// Initialise initialises the validator provider by compiling all the JSON schema files
-// from the specified directory and storing them in a cache indexed by their schema filenames.
+func (v *schemaValidator) getCompiledSchema(schemaKey string) (*jsonschema.Schema, error) {
+	v.cacheMu.RLock()
+	if schema, ok := v.schemaCache[schemaKey]; ok {
+		v.cacheMu.RUnlock()
+		return schema, nil
+	}
+	schemaPath, ok := v.schemaFiles[schemaKey]
+	v.cacheMu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", errSchemaKeyNotFound, schemaKey)
+	}
+
+	// Serialize first-time compiles to avoid concurrent compiler use and duplicate work.
+	v.compileMu.Lock()
+	defer v.compileMu.Unlock()
+
+	v.cacheMu.RLock()
+	if schema, ok := v.schemaCache[schemaKey]; ok {
+		v.cacheMu.RUnlock()
+		return schema, nil
+	}
+	v.cacheMu.RUnlock()
+
+	compiledSchema, err := v.compiler.Compile(schemaPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile JSON schema from file %s: %w", filepath.Base(schemaPath), err)
+	}
+
+	v.cacheMu.Lock()
+	v.schemaCache[schemaKey] = compiledSchema
+	v.cacheMu.Unlock()
+	return compiledSchema, nil
+}
+
+// Initialise initialises the validator provider by indexing all JSON schema files
+// from the specified directory for lazy compilation on first use.
 func (v *schemaValidator) initialise() error {
 	schemaDir := v.config.SchemaDir
 	// Check if the directory exists and is accessible.
@@ -140,8 +185,6 @@ func (v *schemaValidator) initialise() error {
 		return fmt.Errorf("provided schema path is not a directory: %s", schemaDir)
 	}
 
-	compiler := jsonschema.NewCompiler()
-
 	// Helper function to process directories recursively.
 	var processDir func(dir string) error
 	processDir = func(dir string) error {
@@ -151,21 +194,15 @@ func (v *schemaValidator) initialise() error {
 		}
 
 		for _, entry := range entries {
-			path := filepath.Join(dir, entry.Name())
+			entryPath := filepath.Join(dir, entry.Name())
 			if entry.IsDir() {
 				// Recursively process subdirectories.
-				if err := processDir(path); err != nil {
+				if err := processDir(entryPath); err != nil {
 					return err
 				}
 			} else if filepath.Ext(entry.Name()) == ".json" {
-				// Process JSON files.
-				compiledSchema, err := compiler.Compile(path)
-				if err != nil {
-					return fmt.Errorf("failed to compile JSON schema from file %s: %v", entry.Name(), err)
-				}
-
 				// Use relative path from schemaDir to avoid absolute paths and make schema keys domain/version specific.
-				relativePath, err := filepath.Rel(schemaDir, path)
+				relativePath, err := filepath.Rel(schemaDir, entryPath)
 				if err != nil {
 					return fmt.Errorf("failed to get relative path for file %s: %v", entry.Name(), err)
 				}
@@ -190,8 +227,8 @@ func (v *schemaValidator) initialise() error {
 
 				// Construct a unique key combining domain, version, and schema name (e.g., ondc_trv10_v2.0.0_schema).
 				uniqueKey := fmt.Sprintf("%s_%s_%s", domain, version, schemaFileName)
-				// Store the compiled schema in the SchemaCache using the unique key.
-				v.schemaCache[uniqueKey] = compiledSchema
+				// Store schema path for lazy compilation on first use.
+				v.schemaFiles[uniqueKey] = entryPath
 			}
 		}
 		return nil

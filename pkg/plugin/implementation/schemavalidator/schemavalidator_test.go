@@ -186,18 +186,6 @@ func TestValidator_Initialise(t *testing.T) {
 			wantErr: "invalid schema file structure",
 		},
 		{
-			name: "Failed to compile JSON schema",
-			setupFunc: func(schemaDir string) error {
-				// Create a schema file with invalid JSON
-				invalidSchemaFile := filepath.Join(schemaDir, "example", "1.0", "endpoint.json")
-				if err := os.MkdirAll(filepath.Dir(invalidSchemaFile), 0755); err != nil {
-					t.Fatalf("Failed to create directory: %v", err)
-				}
-				return os.WriteFile(invalidSchemaFile, []byte(`{invalid json}`), 0644)
-			},
-			wantErr: "failed to compile JSON schema",
-		},
-		{
 			name: "Invalid schema file structure with empty components",
 			setupFunc: func(schemaDir string) error {
 				// Create a schema file with empty domain, version, or schema name
@@ -275,6 +263,8 @@ func TestValidator_Initialise(t *testing.T) {
 			v := &schemaValidator{
 				config:      config,
 				schemaCache: make(map[string]*jsonschema.Schema),
+				schemaFiles: make(map[string]string),
+				compiler:    jsonschema.NewCompiler(),
 			}
 
 			err := v.initialise()
@@ -286,6 +276,38 @@ func TestValidator_Initialise(t *testing.T) {
 				t.Logf("Test %s passed with expected error: %v", tt.name, err)
 			}
 		})
+	}
+}
+
+func TestValidator_Validate_CompileSchemaFailure(t *testing.T) {
+	schemaDir, err := os.MkdirTemp("", "schemas-invalid")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(schemaDir)
+
+	invalidSchemaFile := filepath.Join(schemaDir, "example", "v1.0", "endpoint.json")
+	if err := os.MkdirAll(filepath.Dir(invalidSchemaFile), 0755); err != nil {
+		t.Fatalf("Failed to create schema directory structure: %v", err)
+	}
+	if err := os.WriteFile(invalidSchemaFile, []byte(`{invalid json}`), 0644); err != nil {
+		t.Fatalf("Failed to write invalid schema file: %v", err)
+	}
+
+	v, _, err := New(context.Background(), &Config{SchemaDir: schemaDir})
+	if err != nil {
+		t.Fatalf("Failed to create validator: %v", err)
+	}
+
+	u, _ := url.Parse("http://example.com/endpoint")
+	payload := `{"context": {"domain": "example", "version": "1.0", "action": "endpoint"}}`
+
+	err = v.Validate(context.Background(), u, []byte(payload))
+	if err == nil {
+		t.Fatalf("Expected schema compile error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to compile JSON schema") {
+		t.Fatalf("Expected compile error, got: %v", err)
 	}
 }
 
